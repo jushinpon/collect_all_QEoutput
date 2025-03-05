@@ -16,10 +16,32 @@ $ip_last_digits = "000" if $ip_last_digits eq "";  # Default if IP extraction fa
 # Define the new output directory
 my $output_dir = "/home/all_sout_cluster$ip_last_digits";
 
-# Check if old directory exists, then rename it
+# Identify and rename old directories
+my @existing_dirs = glob("/home/all_sout_cluster${ip_last_digits}*");
+my $max_suffix = 0;
+my %existing_md5_hashes;
+
+foreach my $dir (@existing_dirs) {
+    if ($dir =~ /all_sout_cluster${ip_last_digits}(\d{2})$/) {
+        $max_suffix = $1 if $1 > $max_suffix;
+    }
+    # Read MD5 hashes from existing all_sout_info.txt files
+    my $info_file = "$dir/all_sout_info.txt";
+    if (-e $info_file) {
+        open my $fh, '<', $info_file or next;
+        while (<$fh>) {
+            if (/(\S+)\s+(\S+)\s+([a-f0-9]{32})$/) {
+                my ($elements, $filepath, $md5) = ($1, $2, $3);
+                $existing_md5_hashes{$md5} = 1;  # Store existing MD5 hashes
+            }
+        }
+        close $fh;
+    }
+}
+
 if (-d $output_dir) {
-    my $creation_date = strftime "%Y%m%d", localtime((stat $output_dir)[10]);  # Get creation date
-    my $backup_dir = "${output_dir}_$creation_date";
+    my $new_suffix = sprintf("%02d", $max_suffix + 1);
+    my $backup_dir = "${output_dir}${new_suffix}";
     rename $output_dir, $backup_dir or die "Failed to rename $output_dir to $backup_dir: $!";
     print "Old directory renamed to $backup_dir\n";
 }
@@ -29,7 +51,6 @@ make_path($output_dir) or die "Failed to create $output_dir: $!";
 
 # Use `find` to get up to 10 `.sout` files, excluding all_sout_clusterXXX
 my @sout_files = `find /home -type f -name "*.sout" ! -path "$output_dir/*"`;
-#my @sout_files = `find /home -type f -name "*.sout" ! -path "$output_dir/*" | head -n 10`;
 map { s/^\s+|\s+$//g; } @sout_files;  # Trim whitespace
 
 # Counter for SCF numbering
@@ -46,6 +67,18 @@ foreach my $sout_file (@sout_files) {
 
     # Skip if no corresponding QE input file
     next unless -e $input_file;
+
+    # Compute hash of the QE input file content
+    open my $in_fh2, '<', $input_file or next;
+    my $content = do { local $/; <$in_fh2> };
+    close $in_fh2;
+    my $file_hash = md5_hex($content);
+
+    # If the file already exists in an old directory, skip it
+    if (exists $existing_md5_hashes{$file_hash}) {
+        print "Skipping existing input file: $input_file (MD5 match found in old folders)\n";
+        next;
+    }
 
     # Check for "JOB DONE" in sout file using `tac`
     my $job_done = system("tac \"$sout_file\" | grep -m1 'JOB DONE' > /dev/null") == 0;
@@ -64,21 +97,6 @@ foreach my $sout_file (@sout_files) {
     
     next if $skip_copy;  # Skip if relax/vc-relax is found
 
-    # Compute hash of the QE input file content
-    open my $in_fh2, '<', $input_file or next;
-    my $content = do { local $/; <$in_fh2> };
-    close $in_fh2;
-    my $file_hash = md5_hex($content);
-
-    # If an identical file exists, mark this for deletion
-    if (exists $content_hash{$file_hash}) {
-        push @{ $content_hash{$file_hash}{duplicates} }, $input_file;
-        next;
-    } else {
-        $content_hash{$file_hash}{original} = $input_file;
-        $content_hash{$file_hash}{duplicates} = [];
-    }
-
     # Get parent folder name
     my $parent_folder = basename($parent_dir);
     my $target_dir = "$output_dir/$parent_folder";
@@ -92,7 +110,7 @@ foreach my $sout_file (@sout_files) {
     # Create output directory only if needed
     make_path($target_dir) unless -d $target_dir;
 
-    # Copy sout and input files if not already present
+    # Copy sout and input files
     my $target_sout = "$target_dir/$filename.sout";
     my $target_input = "$target_dir/$filename.in";
 
@@ -116,9 +134,9 @@ foreach my $sout_file (@sout_files) {
     # Sort and format elements as "Ag-Au-Cu"
     my $element_string = join("-", sort keys %elements);
 
-    # Store info entry
+    # Store info entry with MD5 hash
     if ($element_string) {
-        push @info_entries, "$element_string $target_sout";
+        push @info_entries, "$element_string $target_sout $file_hash";
         $file_registry{$target_sout} = $target_input;  # Track copied files
     }
 }
