@@ -7,6 +7,7 @@ use File::Path qw(make_path);
 use File::Find;
 use File::Copy;
 use POSIX qw(strftime);
+use File::stat;
 
 # Get last three digits of the IP address
 my $ip_last_digits = `ip a | grep 'inet 140.117' | awk '{print \$2}' | cut -d'.' -f4 | cut -d'/' -f1`;
@@ -16,32 +17,17 @@ $ip_last_digits = "000" if $ip_last_digits eq "";  # Default if IP extraction fa
 # Define the new output directory
 my $output_dir = "/home/all_sout_cluster$ip_last_digits";
 
-# Identify and rename old directories
-my @existing_dirs = glob("/home/all_sout_cluster${ip_last_digits}*");
-my $max_suffix = 0;
-my %existing_md5_hashes;
-
-foreach my $dir (@existing_dirs) {
-    if ($dir =~ /all_sout_cluster${ip_last_digits}(\d{2})$/) {
-        $max_suffix = $1 if $1 > $max_suffix;
-    }
-    # Read MD5 hashes from existing all_sout_info.txt files
-    my $info_file = "$dir/all_sout_info.txt";
-    if (-e $info_file) {
-        open my $fh, '<', $info_file or next;
-        while (<$fh>) {
-            if (/(\S+)\s+(\S+)\s+([a-f0-9]{32})$/) {
-                my ($elements, $filepath, $md5) = ($1, $2, $3);
-                $existing_md5_hashes{$md5} = 1;  # Store existing MD5 hashes
-            }
-        }
-        close $fh;
-    }
-}
-
+# Rename old directories with a unique sequential numbering
 if (-d $output_dir) {
-    my $new_suffix = sprintf("%02d", $max_suffix + 1);
-    my $backup_dir = "${output_dir}${new_suffix}";
+    my $new_suffix = 1;
+    my $backup_dir;
+
+    # Find the next available backup directory name
+    do {
+        $backup_dir = sprintf("/home/all_sout_cluster%s%02d", $ip_last_digits, $new_suffix);
+        $new_suffix++;
+    } while (-d $backup_dir);  # Keep increasing the number if the folder exists
+
     rename $output_dir, $backup_dir or die "Failed to rename $output_dir to $backup_dir: $!";
     print "Old directory renamed to $backup_dir\n";
 }
@@ -49,15 +35,23 @@ if (-d $output_dir) {
 # Create the new output directory
 make_path($output_dir) or die "Failed to create $output_dir: $!";
 
-# Use `find` to get up to 10 `.sout` files, excluding all_sout_clusterXXX
-my @sout_files = `find /home -type f -name "*.sout" ! -path "$output_dir/*"`;
-map { s/^\s+|\s+$//g; } @sout_files;  # Trim whitespace
+# Find all `.sout` files under `/home`, excluding symbolic links and folders containing "all_sout_cluster"
+my @sout_files;
+find(
+    sub {
+        return if -l $_;                       # Skip symbolic links
+        return if $File::Find::dir =~ /all_sout_cluster/;  # Skip directories with "all_sout_cluster"
+        return unless -f $_ && /\.sout$/;      # Only process .sout files
+        push @sout_files, $File::Find::name;
+    },
+    "/home"
+);
 
-# Counter for SCF numbering
+# Counter for SCF numbering and duplicate folder tracking
 my $scf_counter = 0;
+my %folder_counts;
 my @info_entries;
 my %file_registry;
-my %content_hash;
 
 foreach my $sout_file (@sout_files) {
     # Get file prefix and parent directory
@@ -67,39 +61,36 @@ foreach my $sout_file (@sout_files) {
 
     # Skip if no corresponding QE input file
     next unless -e $input_file;
+    next if -l $input_file;  # Skip symbolic (soft) link input files
 
-    # Compute hash of the QE input file content
-    open my $in_fh2, '<', $input_file or next;
-    my $content = do { local $/; <$in_fh2> };
-    close $in_fh2;
+    # Compute MD5 hash of QE input file
+    open my $in_fh, '<', $input_file or next;
+    my $content = do { local $/; <$in_fh> };
+    close $in_fh;
     my $file_hash = md5_hex($content);
-
-    # If the file already exists in an old directory, skip it
-    if (exists $existing_md5_hashes{$file_hash}) {
-        print "Skipping existing input file: $input_file (MD5 match found in old folders)\n";
-        next;
-    }
 
     # Check for "JOB DONE" in sout file using `tac`
     my $job_done = system("tac \"$sout_file\" | grep -m1 'JOB DONE' > /dev/null") == 0;
     next unless $job_done;
 
     # Check if input file contains `relax` or `vc-relax`
-    open my $in_fh, '<', $input_file or next;
+    open my $in_fh2, '<', $input_file or next;
     my $skip_copy = 0;
-    while (<$in_fh>) {
+    while (<$in_fh2>) {
         if (/calculation\s*=\s*"?(relax|vc-relax)"?/) {
             $skip_copy = 1;
             last;
         }
     }
-    close $in_fh;
+    close $in_fh2;
     
     next if $skip_copy;  # Skip if relax/vc-relax is found
 
-    # Get parent folder name
+    # Get parent folder name and handle duplicates
     my $parent_folder = basename($parent_dir);
-    my $target_dir = "$output_dir/$parent_folder";
+    $folder_counts{$parent_folder}++;
+    my $folder_suffix = ($folder_counts{$parent_folder} > 1) ? sprintf("_%02d", $folder_counts{$parent_folder}) : "";
+    my $target_dir = "$output_dir/${parent_folder}${folder_suffix}";
 
     # Check if the filename contains "lmp_"
     if ($filename =~ /lmp_/) {
@@ -134,9 +125,9 @@ foreach my $sout_file (@sout_files) {
     # Sort and format elements as "Ag-Au-Cu"
     my $element_string = join("-", sort keys %elements);
 
-    # Store info entry with MD5 hash
+    # Store info entry with MD5 hash and source directory
     if ($element_string) {
-        push @info_entries, "$element_string $target_sout $file_hash";
+        push @info_entries, "$element_string $target_sout $file_hash $parent_dir";
         $file_registry{$target_sout} = $target_input;  # Track copied files
     }
 }
@@ -149,30 +140,19 @@ close $info_fh;
 
 print "Processing complete. Element information stored in $info_file.\n";
 
-# ===================================================
-# Step 2: Remove duplicate `.sout` and `.in` files
-# ===================================================
-print "Removing duplicate QE input and sout files based on identical content...\n";
-my $removed_duplicates_file = "$output_dir/removed_duplicates.txt";
-open my $removed_fh, '>', $removed_duplicates_file or die "Cannot open $removed_duplicates_file: $!";
-
-foreach my $hash (keys %content_hash) {
-    my $original_file = $content_hash{$hash}{original};
-    foreach my $duplicate_file (@{ $content_hash{$hash}{duplicates} }) {
-        # Find corresponding `.sout` file
-        my ($duplicate_filename, $duplicate_dir) = fileparse($duplicate_file, ".in");
-        my $duplicate_sout = "$duplicate_dir/$duplicate_filename.sout";
-
-        # Record deleted files
-        print $removed_fh "Duplicate QE Input: $duplicate_file\n";
-        print $removed_fh "Duplicate QE Output: $duplicate_sout\n";
-        print $removed_fh "Kept Reference: $original_file\n\n";
-
-        # Delete duplicate files
-        unlink $duplicate_file if -e $duplicate_file;
-        unlink $duplicate_sout if -e $duplicate_sout;
-    }
+# ======================================================
+# Remove old tar.gz file if it exists
+# ======================================================
+my $tar_file = "/home/all_sout_cluster${ip_last_digits}.tar.gz";
+if (-e $tar_file) {
+    system("rm \"$tar_file\"") == 0 or die "Failed to remove old tar.gz file: $!";
+    print "Old tar.gz file removed: $tar_file\n";
 }
-close $removed_fh;
 
-print "Duplicate removal complete. Removed files logged in $removed_duplicates_file.\n";
+# ======================================================
+# Create a tar.gz archive for all_sout_cluster$ip_last_digits
+# ======================================================
+system("tar -czf \"$tar_file\" -C \"/home\" \"all_sout_cluster$ip_last_digits\"") == 0
+    or die "Failed to create tar.gz archive: $!";
+
+print "Archive created: $tar_file\n";
