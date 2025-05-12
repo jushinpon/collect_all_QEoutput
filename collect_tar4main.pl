@@ -4,15 +4,7 @@ use warnings;
 use File::Basename;
 use File::Copy;
 
-# Define remote servers and their corresponding SSH ports
-#my %nodes = (
-#    "140.117.60.161" => 20161,
-#    #"140.117.59.182" => 20182,
-#    #"140.117.59.186" => 20186,
-#    #"140.117.59.195" => 22,
-#    #"140.117.59.190" => 22,   # This is the local Rocky Linux server
-#    #"140.117.60.166" => 20166
-#);
+
 
 # Set the target directory in /home instead of /root
 my $local_dir = "/home/collected_tar_files";

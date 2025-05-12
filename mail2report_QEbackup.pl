@@ -13,12 +13,13 @@ $ip =~ /1\d\d\.11\d\.\d+\.(\d+)/;
 my $cluster = $1;
 $cluster =~ s/^\s+|\s+$//;
 print "\$cluster: $cluster\n";
-
-my $Subject = "Cluster $cluster Problem Report(Do not reply!)";
-my @temp = @ARGV;
+my $max_id = $#ARGV;
+my $Subject = "$ARGV[0](Do not reply!)";
+my @temp = @ARGV[1..$max_id];
 map { s/^\s+|\s+$//g; } @temp;
 my $temp = join("\\n",@temp);
-my $body = "To whom it may concern,\\n\\nThe following happens to Cluster $cluster:\\n$temp";
+my $body = "$temp";
+#my $body = "To whom it may concern,\\n\\nThe following happens to Cluster $cluster:\\n$temp";
 #-----python paremeters-----
 my $file = "recipient.txt";
 my @emails;

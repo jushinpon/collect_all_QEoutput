@@ -9,13 +9,13 @@ use POSIX qw(strftime);
 use Time::Piece;
 use Time::Seconds;
 
-print "Script executed at: ", scalar localtime(), "\n";
 
-my $days = 30;  # Set the number of days
+
+my $days = 3;  # Set the number of days
 my $time_limit = time - ($days * 86400);  # Convert days to seconds
 
 # Define the hash file path
-my $hash_file = "/home/jsp1/QEoutput_database/all_sout_info.txt";
+my $hash_file = "/root/all_sout_info.txt";
 my %existing_hashes;
 
 # Load hash numbers from all_sout_info.txt
@@ -108,7 +108,7 @@ find(
 );
 
 # Print results
-print "\nUnique .sout files in cluster $ip_last_digits:\n", join("\n", @sout_files), "\n";
+#print "\nUnique .sout files in cluster $ip_last_digits:\n", join("\n", @sout_files), "\n";
 
 # 開始逐筆處理
 my $folder_index = 1;
@@ -146,7 +146,7 @@ foreach my $sout_file (@sout_files) {
 
     if (exists $existing_hashes{$file_hash}) {
         print "Duplicate hash found: $file_hash\n";  # Debugging output
-         print "Skipping file: $File::Find::name\n";
+        print "Skipping file:  $input_file\n";
         next;
     }
 
@@ -180,18 +180,25 @@ foreach my $sout_file (@sout_files) {
 }
 
 if (@info_entries == 0) {
-    print "❌ 沒有找到符合條件的 .sout 檔案。\n";
+    print "❌ *****沒有找到符合條件的 .sout 檔案 at $ip_last_digits。\n";
     `rm -rf $output_dir`;  # 清除空的資料夾
     print "🗑️  已移除空的資料夾：$output_dir\n";
+    #system("perl ./mail2report_QEbackup.pl \"No new sout at $ip_last_digits\" \"No new sout files found at cluster $ip_last_digits!\"");
+    if (-e $tar_file) {
+        unlink $tar_file or die "Failed to remove old tar.gz file: $!";
+        print "🗑️  舊壓縮檔已移除：$tar_file\n";
+    }
     exit;
 }
+
+system("perl ./mail2report_QEbackup.pl \"find new sout at $ip_last_digits\" \"New sout files found at cluster $ip_last_digits!\"");
 
 # 寫入 all_sout_info.txt
 open my $info_fh, '>', "$output_dir/all_sout_info.txt" or die "Cannot write info file: $!";
 print $info_fh "$_\n" for @info_entries;
 close $info_fh;
 
-print "✅ 整理完成，共處理 ", scalar(@info_entries), " 筆資料。\n";
+print "✅ *****整理完成，共處理 ", scalar(@info_entries), " 筆資料 at $ip_last_digits。\n";
 
 # 移除舊的壓縮檔（若存在）
 if (-e $tar_file) {
