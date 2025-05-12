@@ -1,4 +1,6 @@
 #!/usr/bin/perl
+#tail /home/jsp1/QEoutput_database/all_sout_info.txt
+#ls /home/jsp1/QEoutput_database/73242
 use strict;
 use warnings;
 use Digest::MD5 qw(md5_hex);
